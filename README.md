@@ -6,6 +6,8 @@ Read fan RPM and select firmware fan modes on ASUS systems with supported embedd
 
 On the tested system, selecting full speed increased the CPU fan from **3,237 RPM to approximately 5,300 RPM**. Restoring Normal mode returned it to **3,267 RPM** after settling. No reboot or BIOS-variable write was needed.
 
+A follow-up temperature comparison observed approximately **7 °C lower CPU package temperature** at full speed under the existing VM workload. See the [measurement windows, power readings and chart](docs/vc66-c2.md#cpu-temperature-comparison) for context.
+
 ## Features
 
 - Read the CPU fan's RPM and current EC mode.
