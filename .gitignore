@@ -1,6 +1,7 @@
 vendor/
 private/
 build/
+.impeccable/review/
 __pycache__/
 *.pyc
 *.gpr

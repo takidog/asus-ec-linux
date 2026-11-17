@@ -1,6 +1,43 @@
 package PVE::LocalThermal;
 use strict;
 use warnings;
+use JSON qw(decode_json);
+use Fcntl qw(O_RDONLY O_NONBLOCK O_NOFOLLOW S_ISREG);
+
+sub fan_cache {
+    my ($path, $now) = @_;
+    $path //= '/run/asus-ec-fan/status.json';
+    $now //= time();
+    my $unavailable = { available => JSON::false, control_supported => JSON::false };
+    # Nonblocking, bounded, regular-file read. No EC access or child processes.
+    sysopen(my $fh, $path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW) or return $unavailable;
+    my @stat = stat($fh);
+    if (!@stat || !S_ISREG($stat[2]) || $stat[7] > 4096) {
+        close($fh);
+        return $unavailable;
+    }
+    my $data = '';
+    my $size = sysread($fh, $data, 4097);
+    close($fh);
+    return $unavailable if !defined($size) || $size > 4096;
+    my $value = eval { decode_json($data) };
+    return $unavailable if $@ || ref($value) ne 'HASH';
+    for my $key (qw(updated_at fan_rpm mode_raw)) {
+        return $unavailable if !defined($value->{$key}) || ref($value->{$key}) || $value->{$key} !~ /^\d+(?:\.\d+)?$/;
+    }
+    my $age = $now - $value->{updated_at};
+    return { %$unavailable, reason => 'stale' } if $age < -5 || $age >= 15;
+    my %modes = (0 => 'normal', 1 => 'quiet', 240 => 'full-speed');
+    return $unavailable if $value->{fan_rpm} > 65535 || !defined($modes{$value->{mode_raw}})
+        || ($value->{mode} // '') ne $modes{$value->{mode_raw}}
+        || ($value->{profile} // '') ne 'asus-ite8225-vc66-c2-1602';
+    return {
+        available => JSON::true,
+        control_supported => $value->{mode_raw} == 1 ? JSON::false : JSON::true,
+        updated_at => 0 + $value->{updated_at}, age_seconds => $age < 0 ? 0 : $age,
+        fan_rpm => 0 + $value->{fan_rpm}, mode => $value->{mode},
+    };
+}
 
 # Read existing kernel hwmon attributes only. Never probe or write hardware.
 sub read_line {
@@ -23,7 +60,7 @@ sub temperature {
 }
 
 sub collect {
-    my ($root) = @_;
+    my ($root, $cache) = @_;
     $root //= '/sys/class/hwmon';
     my $out = { map { $_ => [] } qw(cpu cores nvme sata acpi fans) };
     for my $h (sort glob("$root/hwmon*")) {
@@ -74,6 +111,7 @@ sub collect {
         }
     }
     @{$out->{sata}} = sort { $a->{label} cmp $b->{label} } @{$out->{sata}};
+    $out->{ecfan} = fan_cache($cache);
     return $out;
 }
 

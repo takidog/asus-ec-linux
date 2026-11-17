@@ -21,6 +21,10 @@ JAVASCRIPT = Path('/usr/share/pve-manager/js/local-thermal.js')
 NODES = Path('/usr/share/perl5/PVE/API2/Nodes.pm')
 TEMPLATE = Path('/usr/share/pve-manager/index.html.tpl')
 MODULES = Path('/etc/modules-load.d/pve-local-thermal.conf')
+SERVICE = Path('/etc/systemd/system/asus-ec-fan.service')
+SHARE = MODULE.parent
+FAN_ANCHOR = "__PACKAGE__->register_method({\n    name => 'status',\n"
+FAN_HOOK = "require '/usr/local/share/pve-local-thermal/FanAPI.pm';\nPVE::LocalFanAPI::register(__PACKAGE__);\n\n"
 API_ANCHOR = '        $res->{cpuinfo} = PVE::ProcFSTools::read_cpuinfo();\n'
 API_HOOK = '''
         # BEGIN pve-local-thermal
@@ -32,7 +36,7 @@ API_HOOK = '''
         # END pve-local-thermal
 '''
 WEB_ANCHOR = '    <script type="text/javascript" src="/pve2/js/pvemanagerlib.js?ver=[% version %]"></script>\n'
-WEB_HOOK = '    <script type="text/javascript" src="/pve2/js/local-thermal.js?v=2"></script>\n'
+WEB_HOOK = '    <script type="text/javascript" src="/pve2/js/local-thermal.js?v=3"></script>\n'
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
@@ -68,6 +72,7 @@ def restore(manifest, check_hash=True):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('action', choices=['install', 'remove', 'status'])
+    p.add_argument('--fan-control', action='store_true', help='Install the background EC monitor and authenticated mode controls')
     args = p.parse_args()
     if os.geteuid() != 0:
         raise SystemExit('Run as root.')
@@ -85,7 +90,17 @@ def main():
     if args.action == 'remove':
         if not active.exists():
             raise SystemExit('No active installation.')
-        restore(json.loads(active.read_text()))
+        manifest = json.loads(active.read_text())
+        # Check all files before touching the active service or installation.
+        for record in manifest['files']:
+            path = Path(record['path'])
+            if not path.exists() or digest(path.read_bytes()) != record['installed_sha256']:
+                raise SystemExit(f'Refusing rollback: {path} changed since installation; review manually.')
+        if manifest.get('fan_control'):
+            subprocess.run(['systemctl', 'disable', '--now', 'asus-ec-fan.service'], check=True)
+        restore(manifest)
+        if manifest.get('fan_control'):
+            subprocess.run(['systemctl', 'daemon-reload'], check=True)
         active.unlink()
         reload_services()
         print('Removed integration. Backups retained; loaded sensor drivers remain until reboot.')
@@ -106,14 +121,33 @@ def main():
         NODES: original.replace(API_ANCHOR, API_ANCHOR + API_HOOK).encode(),
         TEMPLATE: template.replace(WEB_ANCHOR, WEB_ANCHOR + WEB_HOOK).encode(),
     }
+    if args.fan_control:
+        if original.count(FAN_ANCHOR) != 1:
+            raise SystemExit('PVE fan API anchor does not match. No changes made.')
+        # Enabling writes requires a verified profile before any installation.
+        import importlib.util
+        source = HERE.parent / 'tools/asus_ec.py'
+        spec = importlib.util.spec_from_file_location('asus_ec', source)
+        fan = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fan)
+        fan.select_profile()
+        changes.update({
+            SHARE / 'asus_ec.py': source.read_bytes(),
+            SHARE / 'fan-cache.py': (HERE / 'fan-cache.py').read_bytes(),
+            SHARE / 'FanAPI.pm': (HERE / 'FanAPI.pm').read_bytes(),
+            SERVICE: (HERE / 'asus-ec-fan.service').read_bytes(),
+        })
+        changes[NODES] = changes[NODES].decode().replace(FAN_ANCHOR, FAN_HOOK + FAN_ANCHOR).encode()
     # Refuse to take over unrelated local integration files.
-    for path in (MODULE, JAVASCRIPT, MODULES):
+    for path in changes:
+        if path in (NODES, TEMPLATE):
+            continue
         if path.exists():
             raise SystemExit(f'{path} already exists. No changes made.')
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     backup_dir = STATE / ('backup-' + stamp)
     backup_dir.mkdir(parents=True, mode=0o700)
-    manifest = {'created_utc': stamp, 'files': []}
+    manifest = {'created_utc': stamp, 'fan_control': args.fan_control, 'files': []}
     for index, (path, data) in enumerate(changes.items()):
         backup = backup_dir / f'{index}-{path.name}' if path.exists() else None
         if backup:
@@ -129,12 +163,20 @@ def main():
                        check=True, stdout=subprocess.DEVNULL, timeout=30)
         subprocess.run(['modprobe', 'coretemp'], check=True)
         subprocess.run(['modprobe', 'drivetemp'], check=True)
+        if args.fan_control:
+            subprocess.run(['systemctl', 'daemon-reload'], check=True)
+            subprocess.run(['systemctl', 'enable', '--now', 'asus-ec-fan.service'], check=True)
         reload_services()
+        write(active, json.dumps(manifest, indent=2).encode())
     except BaseException:
+        if args.fan_control:
+            subprocess.run(['systemctl', 'disable', '--now', 'asus-ec-fan.service'], check=False)
         restore(manifest, check_hash=False)
+        if args.fan_control:
+            subprocess.run(['systemctl', 'daemon-reload'], check=False)
         reload_services()
+        active.unlink(missing_ok=True)
         raise
-    write(active, json.dumps(manifest, indent=2).encode())
     print(f'Installed. Backup: {backup_dir}. Reload browser to see readings.')
 
 if __name__ == '__main__':

@@ -4,6 +4,8 @@ use File::Temp qw(tempdir);
 use File::Path qw(make_path);
 use FindBin;
 use Test::More;
+use JSON qw(encode_json);
+use POSIX qw(mkfifo);
 require "$FindBin::Bin/../pve/LocalThermal.pm";
 
 my $root = tempdir(CLEANUP => 1);
@@ -43,4 +45,42 @@ put('hwmon3/fan1_label', 'CPU fan');
 is(PVE::LocalThermal::collect($root)->{fans}[0]{value}, 1500, 'RPM detected if exposed later');
 unlink "$root/hwmon19/temp1_input";
 is(scalar @{PVE::LocalThermal::collect($root)->{cpu}}, 0, 'disappearing sensor omitted');
+my $cache = "$root/status.json";
+my $reading = { updated_at => 100, fan_rpm => 3250, mode_raw => 0, mode => 'normal',
+                profile => 'asus-ite8225-vc66-c2-1602' };
+put('status.json', encode_json($reading));
+ok(PVE::LocalThermal::fan_cache($cache, 110)->{available}, 'fresh cached fan available');
+ok(PVE::LocalThermal::fan_cache($cache, 110)->{control_supported}, 'verified normal mode writable');
+is(PVE::LocalThermal::fan_cache($cache, 110)->{fan_rpm}, 3250, 'cached RPM preserved');
+ok(!PVE::LocalThermal::fan_cache($cache, 115)->{available}, '15-second old reading rejected');
+ok(!PVE::LocalThermal::fan_cache($cache, 90)->{available}, 'future timestamp rejected');
+for my $case (
+    { %$reading, profile => 'another-board' },
+    { %$reading, mode => 'full-speed' },
+    { %$reading, fan_rpm => -1 },
+    { %$reading, updated_at => [] },
+) {
+    put('status.json', encode_json($case));
+    ok(!PVE::LocalThermal::fan_cache($cache, 110)->{available}, 'malformed or incompatible sample rejected');
+}
+put('status.json', encode_json({ %$reading, mode => 'quiet', mode_raw => 1 }));
+ok(!PVE::LocalThermal::fan_cache($cache, 110)->{control_supported}, 'quiet reading cannot enable writes');
+put('status.json', '{incomplete');
+ok(!PVE::LocalThermal::fan_cache($cache, 110)->{available}, 'invalid JSON fails closed');
+put('status.json', 'x' x 4097);
+ok(!PVE::LocalThermal::fan_cache($cache, 110)->{available}, 'oversized cache rejected');
+unlink $cache;
+symlink "$root/hwmon3/fan1_input", $cache or die $!;
+ok(!PVE::LocalThermal::fan_cache($cache, 110)->{available}, 'cache symlink rejected');
+unlink $cache;
+mkfifo($cache, 0600) or die $!;
+eval {
+    local $SIG{ALRM} = sub { die "FIFO read blocked\n" };
+    alarm 2;
+    ok(!PVE::LocalThermal::fan_cache($cache, 110)->{available}, 'FIFO does not block a status request');
+    alarm 0;
+};
+die $@ if $@;
+unlink $cache;
+ok(!PVE::LocalThermal::fan_cache($cache, 110)->{available}, 'missing cache fails closed');
 done_testing();

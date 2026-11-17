@@ -13,7 +13,7 @@ A follow-up temperature comparison observed approximately **7 °C lower CPU pack
 - Read the CPU fan's RPM and current EC mode.
 - Select **Normal** or **full speed** (BIOS QFan disabled).
 - Run a brief full-speed test that restores the original mode automatically.
-- Optional [Proxmox VE temperature integration](docs/pve.md) for CPU, NVMe, SATA and ACPI sensors.
+- Optional [Proxmox VE integration](docs/pve.md) for temperatures, fan RPM and Normal/full-speed controls.
 
 This is experimental hardware support. Quiet mode is identified in firmware but is not exposed as a setter because it has not been tested. Arbitrary PWM percentages and custom fan curves are not implemented.
 
@@ -68,7 +68,7 @@ See [the VC66-C2 case study](docs/vc66-c2.md) for the register map, firmware ide
 
 ## PVE integration and development
 
-The [PVE extension](docs/pve.md) is optional and independent of the CLI. It displays temperatures from standard hwmon drivers. It does not currently include direct EC RPM readings or fan-control buttons. Tested on PVE 8.4.19 / Linux 6.8.12-30-pve.
+The [PVE extension](docs/pve.md) displays temperatures from standard hwmon drivers. Install with `--fan-control` to add cached EC RPM and Normal/full-speed buttons to **Node → Summary**. Hardware reads run in a separate background process; node-status requests only read its bounded cache. Mode changes use asynchronous PVE tasks with `Sys.Modify` permission checks. PVEAdmin alone does not include that privilege. Tested on PVE 8.4.19 / Linux 6.8.12-30-pve.
 
 Run the hardware-free tests on Linux:
 

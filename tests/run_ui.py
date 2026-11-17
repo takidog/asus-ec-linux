@@ -30,6 +30,7 @@ def main():
     parser.add_argument('--chrome', required=True, help='Path to Chrome or Chromium')
     parser.add_argument('--insecure', action='store_true', help='Accept a self-signed PVE TLS certificate')
     parser.add_argument('--strict-control', action='store_true', help='Verify the test catches the strict-mode regression')
+    parser.add_argument('--view-width', type=int, default=770, help='Exercise the status panel at a narrower width')
     args = parser.parse_args()
     parsed = urllib.parse.urlsplit(args.pve_url)
     if parsed.scheme != 'https' or not parsed.netloc or parsed.username or parsed.password:
@@ -50,7 +51,8 @@ def main():
         result = subprocess.run([
             args.chrome, '--headless', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
             '--user-data-dir=' + profile, '--window-size=1000,800', '--virtual-time-budget=4000',
-            '--screenshot=' + str(output / 'summary.png'), '--dump-dom', (output / 'index.html').as_uri(),
+            '--screenshot=' + str(output / 'summary.png'), '--dump-dom',
+            (output / 'index.html').as_uri() + '?width=' + str(args.view_width),
         ], capture_output=True, timeout=40)
     dom = result.stdout.decode('utf-8', errors='replace')
     (output / 'rendered.html').write_text(dom, encoding='utf-8')

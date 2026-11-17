@@ -13,7 +13,7 @@
 - 讀取 CPU 風扇 RPM 與目前 EC 模式。
 - 切換 **Normal** 或 **全速**（關閉 BIOS QFan 調速）。
 - 暫時切換全速，測試結束後自動恢復原模式。
-- 選用的 [Proxmox VE 溫度整合](docs/pve.md)，顯示 CPU、NVMe、SATA 與 ACPI 感測器。
+- 選用的 [Proxmox VE 整合](docs/pve.md)，顯示溫度、風扇 RPM，並提供 Normal／全速切換。
 
 目前屬於實驗性硬體支援。Quiet 模式已在韌體中辨識，但尚未實測，因此未提供設定指令。目前也沒有任意 PWM 百分比或自訂溫度曲線功能。
 
@@ -60,7 +60,7 @@ sudo python3 tools/asus_ec.py set-mode normal
 
 `tools/probe_fan_policy.py` 僅診斷 WMI 路徑；其中 `control_supported: false` 不代表獨立 EC 路徑無法控制。
 
-[PVE 擴充](docs/pve.md) 與 CLI 獨立，目前透過 hwmon 顯示溫度，尚未整合直接 EC RPM 或風扇控制按鈕。已測試 PVE 8.4.19／Linux 6.8.12-30-pve。
+[PVE 擴充](docs/pve.md) 透過 hwmon 顯示溫度；安裝時加上 `--fan-control`，即可在 **Node → Summary** 顯示 EC 風扇 RPM 與 Normal／全速切換。EC 讀取由獨立背景程序執行，節點狀態 API 只讀取有大小限制的快取。調速使用非同步 PVE 工作，要求節點的 `Sys.Modify` 權限；PVEAdmin 角色本身沒有這項權限。已測試 PVE 8.4.19／Linux 6.8.12-30-pve。
 
 ## 開發
 
