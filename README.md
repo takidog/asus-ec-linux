@@ -1,100 +1,82 @@
-# ASUS VivoMini Linux hardware monitoring
+# ASUS EC fan control for Linux
 
-Temperature monitoring for ASUS VC66-C2 on Linux, with a small Proxmox VE node-summary extension and documented fan-interface research.
+**English** | [繁體中文](README.zh-TW.md)
 
-**Temperature monitoring works on the tested machine. Fan control is not implemented or confirmed.** The firmware advertises fan-policy methods, but all tested policy queries returned empty data. This project never writes fan policies, PWM values or EC registers.
+Read fan RPM and select firmware fan modes on ASUS systems with supported embedded-controller (EC) layouts. The current implementation targets an ASUS ITE IT8225 firmware interface, **tested on the VivoMini VC66-C2 with BIOS 1602**. Support is based on a verified board/BIOS register map; sharing an EC chip does not establish compatibility.
 
-繁體中文：已完成 PVE 節點摘要的 CPU、核心、NVMe、SATA 與 ACPI 溫度顯示。目前 BIOS 的風扇查詢回傳全零，尚未找到可驗證的調速介面；沒有加入調速按鈕或修改既有風扇策略。
+On the tested system, selecting full speed increased the CPU fan from **3,237 RPM to approximately 5,300 RPM**. Restoring Normal mode returned it to **3,267 RPM** after settling. No reboot or BIOS-variable write was needed.
 
-## Tested configuration
+## Features
 
-| Component | Version / result |
-| --- | --- |
-| Machine | ASUS MINIPC VC66-C2, Intel Core i5-10400 |
-| BIOS | 1602, dated 2021-12-01 |
-| Proxmox VE | 8.4.19 |
-| Kernel | 6.8.12-30-pve |
-| CPU | Package and six core temperatures, `coretemp` |
-| Storage | One NVMe controller, two SATA SSDs (`drivetemp`) |
-| ACPI | One `acpitz` zone; its physical location is unspecified |
-| Fan | No `fan*_input` or `pwm*` attributes exposed |
+- Read the CPU fan's RPM and current EC mode.
+- Select **Normal** or **full speed** (BIOS QFan disabled).
+- Run a brief full-speed test that restores the original mode automatically.
+- Optional [Proxmox VE temperature integration](docs/pve.md) for CPU, NVMe, SATA and ACPI sensors.
 
-Only this PVE version has been tested. The installer refuses layouts whose source anchors do not match. This is a local extension to PVE package files, not an official Proxmox plugin.
+This is experimental hardware support. Quiet mode is identified in firmware but is not exposed as a setter because it has not been tested. Arbitrary PWM percentages and custom fan curves are not implemented.
 
-## Install on PVE
+## Quick start
 
-Copy or clone this repository onto the PVE host. Run as root from its directory:
+Requires Linux, Python 3.9+, root, the kernel's `ec_sys` module, and mounted debugfs exposing `/sys/kernel/debug/ec/ec0/io` after module loading. Use the host, not a container or VM.
 
 ```sh
-python3 pve/install.py install
-python3 pve/install.py status
+git clone https://github.com/takidog/asus-ec-linux.git
+cd asus-ec-linux
+
+# Read RPM and mode. Does not write EC registers.
+sudo python3 tools/asus_ec.py status
+
+# Full speed for 10 seconds, then restore the original mode.
+sudo python3 tools/asus_ec.py test-full-speed --seconds 10
+
+# Select a mode until firmware changes it or the machine restarts.
+sudo python3 tools/asus_ec.py set-mode full-speed
+sudo python3 tools/asus_ec.py set-mode normal
 ```
 
-Reload the browser and open **Node → Summary**. The extension adds CPU package/core, NVMe, SATA, ACPI and fan rows. A missing sensor is unavailable, never invented as zero. On the tested VC66-C2, the fan row says **No RPM sensor exposed**. Colors use each sensor's kernel-provided maximum/critical thresholds.
+Each reading is a JSON line, for example:
 
-The installer loads `coretemp` and `drivetemp`, makes those modules persistent, installs a read-only Perl collector, adds one node-status API hook and loads a separate JavaScript extension. It reloads `pvedaemon` and `pveproxy`; it does not reboot or restart virtual machines. The collector reads existing hwmon files during ordinary PVE status polling. It starts no daemon and runs no hardware-discovery commands.
-
-Files changed or added:
-
-```text
-/usr/share/perl5/PVE/API2/Nodes.pm
-/usr/share/pve-manager/index.html.tpl
-/usr/local/share/pve-local-thermal/LocalThermal.pm
-/usr/share/pve-manager/js/local-thermal.js
-/etc/modules-load.d/pve-local-thermal.conf
+```json
+{"stage":"status","profile":"asus-ite8225-vc66-c2-1602","mode":"normal","mode_raw":0,"fan_rpm":3267}
 ```
 
-Backups and the active manifest are under `/var/lib/pve-local-thermal/`. Each installed file has a recorded SHA-256.
+`set-mode` changes runtime EC state. It does not save a BIOS setting, install a service, or reapply the mode after reboot/resume. Fan inertia means the immediate RPM after a mode change will differ from its settled speed.
 
-## Remove or upgrade
+## Compatibility and safeguards
+
+| System / firmware | RPM | Normal / full speed | Quiet | Custom curve |
+| --- | --- | --- | --- | --- |
+| ASUS VC66-C2, BIOS 1602 | Tested | Tested | Firmware definition only | Unimplemented |
+| ASUS VC66-C2, BIOS 1603 | Not tested; relevant sensor/EC/WMI modules match 1602 | Not enabled | Not tested | Unimplemented |
+| Other ASUS boards with ITE IT8225 | Register map unverified | Not enabled | Not tested | Unimplemented |
+
+The tool selects an explicit DMI vendor/board/BIOS profile and refuses unknown combinations. There is no force-model or arbitrary-register option. New compatible boards can be added as separately reviewed profiles; the project's scope is not limited to the first tested machine.
+
+Reads and writes require EC bank zero; the tool never switches banks. Only the verified mode byte is writable. A write requires the original mode to be Normal or full speed so it can be restored using a tested value. The tool checks readback and uses a separate watchdog process to restore on failed operations, parent disconnection or timeout. Successful `set-mode` operations intentionally retain the requested mode.
+
+If `ec_sys` is already loaded, status preserves it and mode changes refuse to reconfigure it. Otherwise the tool loads the module for the operation, disables write access and unloads it afterward. Temporary tests accept 1–30 seconds. A process lock prevents overlapping instances of this tool; it cannot coordinate firmware or other EC utilities. Avoid concurrent EC tools. Restoration is best effort if the kernel, firmware or machine itself fails; bank checks cannot make multiple EC transactions atomic.
+
+## Firmware and Windows software research
+
+The working path was recovered from the ASUS BIOS fan-setting callback and sensor provider with Ghidra, then checked against real RPM changes on Linux. It uses the kernel's ACPI EC transport through `ec_sys`; no custom raw-port driver is needed.
+
+The advertised ASUSManagement WMI fan-policy methods are stubs in the examined firmware: getters leave the policy empty and setters return an unsupported result. Windows libraries provide WMI/COM wrappers, but their presence does not make those firmware methods functional.
+
+See [the VC66-C2 case study](docs/vc66-c2.md) for the register map, firmware identifiers, Windows call chains, other-board evidence and remaining unknowns. The optional `tools/probe_fan_policy.py` is a **WMI-only diagnostic**; its `control_supported: false` result does not describe the separate, working EC path.
+
+## PVE integration and development
+
+The [PVE extension](docs/pve.md) is optional and independent of the CLI. It displays temperatures from standard hwmon drivers. It does not currently include direct EC RPM readings or fan-control buttons. Tested on PVE 8.4.19 / Linux 6.8.12-30-pve.
+
+Run the hardware-free tests on Linux:
 
 ```sh
-python3 pve/install.py remove
-```
-
-Reload the browser afterward. Removal restores original files and removes the added files, while retaining backups. Already loaded sensor drivers stay loaded until reboot.
-
-Before upgrading PVE, remove this extension. After the upgrade, review compatibility, run the UI test against the new PVE assets, then reinstall. There is deliberately no automatic package-update hook. If package updates or local edits have already changed an installed file, removal refuses to overwrite it: review the manifest and reconcile the small hooks with the current package version manually. Never restore an old whole-file backup over a newer PVE package without review.
-
-`status` prints `OK` or `CHANGED` for every tracked file. After modifying this project's code, remove the existing installation before reinstalling.
-
-## Fan-interface investigation
-
-See [the VC66-C2 research notes](docs/vc66-c2.md) for the ACPI/WMI method map, firmware results and Ghidra analysis of ASUS Windows libraries.
-
-An optional diagnostic invokes **only the firmware's GetFanPolicy method** through an already available Linux ACPI debugger:
-
-```sh
-sudo python3 tools/probe_fan_policy.py --fan-selector 0 1 2 3
-```
-
-It is restricted to the VC66-C2 DMI identity and selectors 0–3. It requires `/sys/kernel/debug/acpi/acpidbg` and ACPI debug parameters; the tested PVE kernel provided these already. Do not run it concurrently with another ACPI debugger session. It temporarily enables buffer output and restores debug settings on normal completion or handled errors. Forced termination or a system failure cannot guarantee restoration. This is an occasional diagnostic, not a monitoring loop.
-
-The result is `empty_response` for all-zero buffers, otherwise `unverified_response`. **Both return `control_supported: false`.** Neither a zero error-code field nor the existence of a setter name establishes safe control. Fan selector meanings, mode/profile values and the manual-curve wire format remain unverified.
-
-## Tests
-
-On Linux, from the repository root:
-
-```sh
-perl tests/test_thermal.pl
 python3 -m unittest discover -s tests -v
+perl tests/test_thermal.pl
 ```
 
-The collector tests use synthetic sysfs files, including disappearing sensors, decimal thresholds and missing RPM. The probe tests reject malformed buffers and prevent empty firmware responses being mistaken for supported controls.
+See [testing notes](docs/testing.md) for frontend checks. EC tests cover model/BIOS guards, torn readings, bank changes, exact write targets, restoration after errors, and independent-process watchdog timeout/disconnection. Tests never access real hardware.
 
-For the frontend, provide the URL of a PVE installation and a local Chrome/Chromium binary:
+Contributions for other ASUS systems should include the board/BIOS/kernel version, the source of the register map, sanitized RPM/mode observations, and a demonstrated restoration path. A matching chip name alone is insufficient. Do not submit credentials, cookies, serial numbers, host addresses, complete firmware dumps or proprietary ASUS binaries.
 
-```sh
-python3 tests/run_ui.py --pve-url https://pve.example:8006 --chrome /usr/bin/chromium
-```
-
-For a known local host with a self-signed certificate, add `--insecure`. The runner downloads only unauthenticated UI assets into the ignored `build/` directory. It renders a local fixture with synthetic readings, checks missing sensors, text escaping, updates and reopening, and saves a screenshot. It never signs in or operates a real PVE page. Run with `--strict-control` to verify that reintroducing the original strict-mode bug is detected.
-
-**Ext JS compatibility:** the override must remain non-strict. PVE's Ext JS `callParent()` inspects caller metadata; a strict `initComponent()` breaks node-summary construction even while backend APIs stay fast. The browser test exercises the actual PVE class to catch this failure.
-
-## Contributing
-
-Useful evidence includes the board/BIOS/kernel version, exposed hwmon attributes, and sanitized diagnostic results. Do not submit credentials, cookies, serial numbers, host addresses, complete firmware dumps or proprietary ASUS binaries. A control implementation needs verified selector/enum semantics, observable readback and a demonstrated restoration path before exposing setters.
-
-Original code and documentation are MIT licensed. Vendor software and downloaded PVE test assets are not distributed by this repository and retain their respective licenses.
+Original code and documentation are MIT licensed. Vendor software and downloaded PVE test assets are not distributed and retain their respective licenses.

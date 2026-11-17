@@ -34,6 +34,7 @@ def parse_response(text, selector):
     if expected == 0 or len(data) != expected:
         raise ValueError(f'Incomplete buffer: expected {expected} bytes, received {len(data)}')
     return {
+        'interface': 'ASUSManagement WMI fan policy (not direct EC control)',
         'fan_selector': selector,
         'method': r'\AMW0.GFAN',
         'length': len(data),
