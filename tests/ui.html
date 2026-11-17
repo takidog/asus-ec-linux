@@ -1,0 +1,58 @@
+<!DOCTYPE html><html><head><meta charset="utf-8">
+<link rel="stylesheet" href="theme.css"><link rel="stylesheet" href="pve.css"><link rel="stylesheet" href="pmx.css">
+<script>
+window.gettext = x => x;
+window.Proxmox = {NodeName:'test',UserName:'test@pam',defaultLang:'en',Setup:{auth_cookie_name:'PVEAuthCookie'}};
+window.addEventListener('error', e => {
+    document.getElementById('result').textContent += '\nERROR: ' + (e.error ? e.error.stack : e.message);
+});
+</script>
+<script src="ext.js"></script><script src="charts.js"></script>
+<script src="proxmoxlib.js"></script><script src="pve.js"></script>
+<script src="local-thermal.js"></script>
+</head><body><pre id="result">START</pre><div id="view"></div>
+<script>
+Ext.onReady(function () {
+    try {
+        Ext.state.Manager.setProvider(Ext.create('PVE.StateProvider'));
+        const store = Ext.create('Proxmox.data.ObjectStore', {
+            url:'/fixture-status', storeid:'test-node-status', interval:0,
+        });
+        const view = Ext.create('PVE.node.StatusView', {
+            renderTo:'view', width:770, rstore:store, pveSelNode:{data:{node:'test'}},
+        });
+        const sensors = {cpu:[{label:'Package id 0',value:81,max:84,crit:100}],
+            cores:[0,1,2,3,4,5].map(i=>({label:'Core '+i,value:76+i,max:84,crit:100})),
+            nvme:[{label:'nvme0 Composite',value:65.85,max:79.85,crit:84.85}],
+            sata:[{label:'sda',value:51},{label:'sdb',value:54}],
+            acpi:[{label:'ACPI zone',value:27.8}],fans:[]};
+        const widgets = view.query('pmxInfoWidget').filter(w=>w.textField==='localthermal');
+        const update = value => {
+            store.loadData([{key:'localthermal',value}]);
+            widgets.forEach(w=>view.updateField(w));
+        };
+        if (widgets.length !== 6) throw Error('Expected six sensor widgets');
+        update(sensors);
+        if (!view.el.dom.textContent.includes('81°C') ||
+            !view.el.dom.textContent.includes('No RPM sensor exposed')) throw Error('Sensor values missing');
+        const cpu = widgets.find(w=>w.itemId==='local-thermal-cpu');
+        if (!cpu.renderer({cpu:[{label:'<img onerror=x>',value:1}]}).includes('&lt;img')) {
+            throw Error('Sensor labels are not escaped');
+        }
+        update({});
+        if (!view.el.dom.textContent.includes('Unavailable') || view.el.dom.textContent.includes('81°C')) {
+            throw Error('Missing readings leave stale values');
+        }
+        update(sensors);
+        const second = Ext.create('PVE.node.StatusView', {rstore:store,pveSelNode:{data:{node:'test'}}});
+        if (view.query('pmxInfoWidget').length !== second.query('pmxInfoWidget').length ||
+            second.query('pmxInfoWidget').filter(w=>w.textField==='localthermal').length !== 6) {
+            throw Error('Duplicate widgets after reopening');
+        }
+        second.destroy();
+        document.getElementById('result').textContent = 'PASS: create, update, missing sensors, escaping, reopen';
+    } catch(e) {
+        document.getElementById('result').textContent = 'FAIL: ' + (e.stack || e);
+    }
+});
+</script></body></html>

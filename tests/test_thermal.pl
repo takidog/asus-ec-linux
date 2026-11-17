@@ -1,0 +1,46 @@
+use strict;
+use warnings;
+use File::Temp qw(tempdir);
+use File::Path qw(make_path);
+use FindBin;
+use Test::More;
+require "$FindBin::Bin/../pve/LocalThermal.pm";
+
+my $root = tempdir(CLEANUP => 1);
+sub put {
+    my ($path, $value) = @_;
+    open(my $fh, '>', "$root/$path") or die $!;
+    print $fh "$value\n";
+    close($fh);
+}
+make_path(map { "$root/$_" } qw(hwmon19 hwmon2 hwmon8 hwmon3 hwmon5/device/block/sda));
+put('hwmon19/name', 'coretemp');
+put('hwmon19/temp1_label', 'Package id 0');
+put('hwmon19/temp1_input', '81500');
+put('hwmon19/temp1_max', '84000');
+put('hwmon19/temp2_label', 'Core 0');
+put('hwmon19/temp2_input', '78000');
+put('hwmon19/temp3_input', 'invalid');
+put('hwmon2/name', 'nvme');
+put('hwmon2/temp1_input', '65850');
+put('hwmon2/temp1_crit', '84850');
+put('hwmon8/name', 'iwlwifi_1');
+put('hwmon8/temp1_input', '');
+put('hwmon3/name', 'asus');
+put('hwmon5/name', 'drivetemp');
+put('hwmon5/temp1_input', '51000');
+my $s = PVE::LocalThermal::collect($root);
+is($s->{cpu}[0]{value}, 81.5, 'CPU found independently of hwmon index');
+is($s->{cpu}[0]{max}, 84, 'threshold preserves units');
+is(scalar @{$s->{cores}}, 1, 'bad reading omitted');
+is($s->{nvme}[0]{value}, 65.85, 'NVMe precision');
+is($s->{nvme}[0]{crit}, 84.85, 'critical threshold');
+is($s->{sata}[0]{label}, 'sda', 'SATA block device label');
+is($s->{sata}[0]{value}, 51, 'SATA value');
+is(scalar @{$s->{fans}}, 0, 'missing RPM is not reported as zero');
+put('hwmon3/fan1_input', '1500');
+put('hwmon3/fan1_label', 'CPU fan');
+is(PVE::LocalThermal::collect($root)->{fans}[0]{value}, 1500, 'RPM detected if exposed later');
+unlink "$root/hwmon19/temp1_input";
+is(scalar @{PVE::LocalThermal::collect($root)->{cpu}}, 0, 'disappearing sensor omitted');
+done_testing();

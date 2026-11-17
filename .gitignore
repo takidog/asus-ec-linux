@@ -1,0 +1,10 @@
+vendor/
+private/
+build/
+__pycache__/
+*.pyc
+*.gpr
+*.rep/
+*.zip
+*.dat
+*.dsl
